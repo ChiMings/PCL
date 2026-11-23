@@ -1,0 +1,84 @@
+name: Build (download enabled)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Plain Craft Launcher 2/**'
+  workflow_dispatch:
+
+concurrency:
+  group: build-unrestricted
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Enable MC download
+        shell: pwsh
+        run: |
+          $f = "Plain Craft Launcher 2\Modules\ModSecret.vb"
+          $raw = Get-Content $f -Raw
+          $patched = $raw -replace 'Public Const RestrictMcDownload As Boolean = True', 'Public Const RestrictMcDownload As Boolean = False'
+          if ($patched -eq $raw) {
+            Write-Error "未找到 RestrictMcDownload = True，上游可能改了实现，中止构建"
+            exit 1
+          }
+          Set-Content -Path $f -Value $patched -NoNewline -Encoding UTF8
+          Select-String -Path $f -Pattern 'RestrictMcDownload'
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+        with:
+          msbuild-architecture: x64
+
+      - name: Restore NuGet
+        run: dotnet restore PCLCS\PCLCS.csproj
+
+      - name: Build
+        run: msbuild "Plain Craft Launcher 2\Plain Craft Launcher 2.vbproj" -p:Configuration=Release
+
+      - name: Collect
+        id: collect
+        shell: pwsh
+        run: |
+          $exe = "Plain Craft Launcher 2\obj\Release\Plain Craft Launcher 2.exe"
+          if (!(Test-Path $exe)) { $exe = Get-ChildItem -Recurse -Filter "Plain Craft Launcher 2.exe" | Where-Object { $_.FullName -like "*Release*" } | Select-Object -First 1 -ExpandProperty FullName }
+          $ver = (Get-Item $exe).VersionInfo.FileVersion
+          if (-not $ver) { $ver = (Get-Item $exe).VersionInfo.ProductVersion }
+          Write-Host "exe=$exe version=$ver"
+          "exe=$exe" >> $env:GITHUB_OUTPUT
+          "ver=$ver" >> $env:GITHUB_OUTPUT
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item $exe "out\PCL-$ver-unrestricted.exe"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PCL-${{ steps.collect.outputs.ver }}-unrestricted
+          path: out\*.exe
+          if-no-files-found: error
+
+      - name: Publish rolling release
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $tag = "auto-build"
+          gh release delete $tag --yes --cleanup-tag 2>$null
+          gh release create $tag "out\PCL-${{ steps.collect.outputs.ver }}-unrestricted.exe" `
+            --title "自动构建 ${{ steps.collect.outputs.ver }}" `
+            --notes "基于上游 main（${{ github.sha }}）构建，已开启 MC 下载。时间：${{ github.event.repository.updated_at }}" `
+            --prerelease
