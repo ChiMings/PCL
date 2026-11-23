@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'Plain Craft Launcher 2/**'
+      - '.github/workflows/build-unrestricted.yml'
   workflow_dispatch:
 
 concurrency:
