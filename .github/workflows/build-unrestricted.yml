@@ -1,12 +1,14 @@
 name: Build (download enabled)
 
+# 直接检出上游最新代码构建：即使同步失败，产出的也永远是最新版
 on:
+  schedule:
+    - cron: '30 19 * * *'
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
-      - 'Plain Craft Launcher 2/**'
       - '.github/workflows/build-unrestricted.yml'
-  workflow_dispatch:
 
 concurrency:
   group: build-unrestricted
@@ -20,14 +22,23 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout upstream
         uses: actions/checkout@v4
         with:
+          repository: Meloong-Git/PCL
+          ref: main
           fetch-depth: 1
           submodules: recursive
+          path: src
+
+      - name: Resolve upstream commit
+        id: up
+        shell: bash
+        run: echo "sha=$(git -C src rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
       - name: Enable MC download
         shell: pwsh
+        working-directory: src
         run: |
           $f = "Plain Craft Launcher 2\Modules\ModSecret.vb"
           $raw = Get-Content $f -Raw
@@ -45,24 +56,31 @@ jobs:
           msbuild-architecture: x64
 
       - name: Restore NuGet
+        working-directory: src
         run: dotnet restore PCLCS\PCLCS.csproj
 
       - name: Build
+        working-directory: src
         run: msbuild "Plain Craft Launcher 2\Plain Craft Launcher 2.vbproj" -p:Configuration=Release
 
       - name: Collect
         id: collect
         shell: pwsh
+        working-directory: src
         run: |
           $exe = "Plain Craft Launcher 2\obj\Release\Plain Craft Launcher 2.exe"
-          if (!(Test-Path $exe)) { $exe = Get-ChildItem -Recurse -Filter "Plain Craft Launcher 2.exe" | Where-Object { $_.FullName -like "*Release*" } | Select-Object -First 1 -ExpandProperty FullName }
+          if (!(Test-Path $exe)) {
+            $exe = Get-ChildItem -Recurse -Filter "Plain Craft Launcher 2.exe" |
+                   Where-Object { $_.FullName -like "*Release*" } |
+                   Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (!(Test-Path $exe)) { Write-Error "未找到编译产物"; exit 1 }
           $ver = (Get-Item $exe).VersionInfo.FileVersion
           if (-not $ver) { $ver = (Get-Item $exe).VersionInfo.ProductVersion }
           Write-Host "exe=$exe version=$ver"
-          "exe=$exe" >> $env:GITHUB_OUTPUT
           "ver=$ver" >> $env:GITHUB_OUTPUT
-          New-Item -ItemType Directory -Force -Path out | Out-Null
-          Copy-Item $exe "out\PCL-$ver-unrestricted.exe"
+          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\out" | Out-Null
+          Copy-Item $exe "$env:GITHUB_WORKSPACE\out\PCL-$ver-unrestricted.exe"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -76,10 +94,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
+        working-directory: ${{ github.workspace }}
         run: |
           $tag = "auto-build"
           gh release delete $tag --yes --cleanup-tag 2>$null
           gh release create $tag "out\PCL-${{ steps.collect.outputs.ver }}-unrestricted.exe" `
-            --title "自动构建 ${{ steps.collect.outputs.ver }}" `
-            --notes "基于上游 main（${{ github.sha }}）构建，已开启 MC 下载。时间：${{ github.event.repository.updated_at }}" `
+            --title "PCL ${{ steps.collect.outputs.ver }} 自动构建" `
+            --notes "上游 Meloong-Git/PCL @ ${{ steps.up.outputs.sha }}，已开启 MC 下载。构建于 ${{ github.run_id }}。" `
             --prerelease
