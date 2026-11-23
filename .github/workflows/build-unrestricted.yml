@@ -97,8 +97,18 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           $tag = "auto-build"
-          gh release delete $tag --yes --cleanup-tag 2>$null
-          gh release create $tag "out\PCL-${{ steps.collect.outputs.ver }}-unrestricted.exe" `
-            --title "PCL ${{ steps.collect.outputs.ver }} 自动构建" `
-            --notes "上游 Meloong-Git/PCL @ ${{ steps.up.outputs.sha }}，已开启 MC 下载。构建于 ${{ github.run_id }}。" `
-            --prerelease
+          $title = "PCL ${{ steps.collect.outputs.ver }} 自动构建"
+          $notes = "上游 Meloong-Git/PCL @ ${{ steps.up.outputs.sha }}，已开启 MC 下载。构建于 ${{ github.run_id }}。"
+          $asset = "out\PCL-${{ steps.collect.outputs.ver }}-unrestricted.exe"
+
+          gh release view $tag --json tagName 2>$null | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title $title --notes $notes --prerelease
+          } else {
+            gh release edit $tag --title $title --notes $notes --prerelease
+          }
+          if ($LASTEXITCODE -ne 0) { Write-Error "创建/编辑 release 失败"; exit 1 }
+
+          gh release upload $tag $asset --clobber
+          if ($LASTEXITCODE -ne 0) { Write-Error "上传附件失败"; exit 1 }
+          gh release view $tag --json assets,body
