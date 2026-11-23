@@ -4,6 +4,9 @@ on:
   schedule:
     - cron: '0 19 * * *'
   workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/sync-upstream.yml'
 
 permissions:
   contents: write
